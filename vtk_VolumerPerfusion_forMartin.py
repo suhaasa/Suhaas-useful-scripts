@@ -110,40 +110,6 @@ def write_polydata(input_data, filename, datatype=None):
     # Write
     writer.Write()
 
-
-def intializeVTP(filename,vprint):
-  datareader=vtk.vtkXMLPolyDataReader()
-  datareader.SetFileName(filename)
-  datareader.Update()
-
-  mesh=vtk.vtkDataSetMapper()
-  mesh=datareader.GetOutput()
-  vprint('Loaded .vtp file.')
-  return mesh
-
-def intializeVTU(filename,vprint):
-	datareader=vtk.vtkXMLUnstructuredGridReader()
-	datareader.SetFileName(filename)
-	datareader.Update()
-
-	mesh=datareader.GetOutput()
-	vprint('Loaded .vtu file.')
-	return mesh
-
-def writeVTU(mesh,filename):
-	print('Writing .vtu file...')
-	w = vtk.vtkXMLUnstructuredGridWriter()
-	w.SetInputData(mesh)
-	w.SetFileName(filename)
-	w.Write()
-	print('done.')
-
-def writeVTP(mesh,filename):
-  w = vtk.vtkXMLUnstructuredDataWriter()
-  w.SetInputData(mesh)
-  w.SetFileName(filename + '.vtp')
-  w.Write()
-
 def calcDistance2Points(model, pt1,pt2):
 	print('ddddee')
 	x1,y1,z1 = model.GetPoint(pt1)
@@ -166,6 +132,7 @@ def calcDistanceAlongSurface(mesh,startPt,endPt):
 			dist += math.sqrt(vtk.vtkMath.Distance2BetweenPoints(p0, p1))
 	return dist
 
+# Get centroid of a cap polydata
 def calculateCapCenters(caps):
 	cap_centers = []
 	for cap in caps:
@@ -182,6 +149,7 @@ def calculateCapCenters(caps):
 		cap_centers.append([center_x,center_y,center_z])
 	return cap_centers
 
+# iterates a list of points and finds the min distance to a seed pt
 def minDistanceBetweenPointslist(model, seedPt, pt_list):
 	min = 100000
 	min_pt_index = 0
@@ -192,37 +160,7 @@ def minDistanceBetweenPointslist(model, seedPt, pt_list):
 			min_pt_index = iPt
 	return min,min_pt_index
 
-def convert_np_array_to_vtk(name,np_array):
-	data_array = vtk.vtkDoubleArray()
-	data_array.SetName(name)
-	for i in range(0,len(np_array)):
-		data_array.InsertNextValue(np_array[i])
-	return data_array
-
-def isValidLine(image,threshold,p1,p2):
-	xp = p1[0]-p2[0]
-	yp = p1[1]-p2[1]
-	zp = p1[2]-p2[2]
-	l = np.linspace(0,1,100)
-	for i in l:
-		if(image.FindPoint([p1[0]+xp*i, p1[1]+yp*i, p1[2]+zp*i])>=0):
-			value = image.GetPointData().GetArray(0).GetValue(image.FindPoint([p1[0]+xp*i, p1[1]+yp*i, p1[2]+zp*i]))
-			if(value<threshold):
-				return 0
-	return 1
-
-def getConnectedVerticesNotIncludingSeed(model, seedPt):
-	cell_list = vtk.vtkIdList()
-	connectedPts_list = vtk.vtkIdList()
-	model.GetPointCells(seedPt,cell_list)
-	for j in range(0,cell_list.GetNumberOfIds()):
-		pt_list = vtk.vtkIdList()
-		pt_list = model.GetCell(cell_list.GetId(j)).GetPointIds()
-		for k in range(0,pt_list.GetNumberOfIds()):
-			if (pt_list.GetId(k) != seedPt):
-				connectedPts_list.InsertUniqueId(pt_list.GetId(k))
-	return connectedPts_list
-
+# calculates distance between points as a node ID or as a list of x,y,z
 def calcDistance2Points(model, pt1,pt2):
 	if(type(pt1) is int):
 		x1,y1,z1 = model.GetPoint(pt1)
@@ -272,7 +210,8 @@ def minDistanceBetweenPointsGraph(graph, heart, ip, cap_center_coordinates):
 	visited,path,point = dijsktra_closest(graph,ip,destinations)
 	min, min_index = minDistanceBetweenPointslist(heart, point, pt_list)
 	return visited, min_index
-
+#############################################################################################################################################################################3
+#Graph class
 class Graph:
 	def __init__(self):
 		self.nodes = set()
@@ -288,6 +227,7 @@ class Graph:
 		self.distances[(from_node, to_node)] = distance
 		self.distances[(to_node, from_node)] = distance
 
+	#adds a virtual node that collapses a group of nodes to one virtual node to make a source and sets distance to 0
 	def add_virtual_node(self, v_node, zero_edge_nodes):
 		self.nodes.add(v_node)
 		for i in zero_edge_nodes:
@@ -295,7 +235,8 @@ class Graph:
 			self.edges[i].append(v_node)
 			self.distances[(v_node, i)] = 0
 			self.distances[(i, v_node)] = 0
-
+	
+	#distance cutoff is a value that ensures RCA centerlines don't wrap onto the LV myocardium through the right ventricle
 	def add_virtual_node_distances(self, v_node, edge_nodes, distances):
 		self.nodes.add(v_node)
 		DISTANCE_CUTOFF = 1
@@ -309,8 +250,7 @@ class Graph:
 	def get_num_of_nodes(self):
 		return len(self.nodes)
 
-
-
+#classic dijsktra method
 def dijsktra(graph, initial):
 	visited = {}
 	visited[initial] = 0
@@ -346,7 +286,7 @@ def dijsktra(graph, initial):
 	return visited, path
 
 
-
+#dijsktra method that stops after reaching closest destination
 def dijsktra_closest(graph, initial, destinations):
 	visited = {initial: 0}
 	path = {}
@@ -379,6 +319,7 @@ def dijsktra_closest(graph, initial, destinations):
 
 	return visited, path, destinations.intersection(path)
 
+#dijsktra method that incorporates weights in the distance calculation
 def weightedDijsktra(graph, initial, weights):
 	visited = {}
 	visited[initial] = 0
@@ -419,6 +360,7 @@ def weightedDijsktra(graph, initial, weights):
 	pbar.close()
 	return visited, path	
 
+#returns node ids and total distance of the shortest path between two points
 def shortest_path(graph, origin, destination):
 	visited, paths = dijkstra(graph, origin)
 	full_path = deque()
@@ -433,6 +375,7 @@ def shortest_path(graph, origin, destination):
 
 	return visited[destination], list(full_path)
 
+# fast marching method that optimizes calculation of distances using a vtk mesh
 def fastMarching(heart_graph,heart,seedPts):
 	pt_set= set()
 	numPts = heart.GetNumberOfPoints()
@@ -482,6 +425,7 @@ def fastMarching(heart_graph,heart,seedPts):
 
 	return pt_dist
 
+
 def multipleSourceDistance(heart,graph,v_node,child_nodes,distances,weights):
 	graph.add_virtual_node_distances(v_node,child_nodes,distances)
 	visited,path = weightedDijsktra(graph,v_node,weights)
@@ -508,6 +452,7 @@ def multipleCapSourceDistance(heart,graph,v_node,child_nodes):
 	heart.GetPointData().AddArray(data_array)
 	return heart
 
+#generates a graph of the heart 
 def generateGraph(heart):
 	vprint('Generating graph...')
 	heart_graph = Graph()
@@ -520,120 +465,7 @@ def generateGraph(heart):
 			cpt = connnectedPt_list.GetId(j)
 			heart_graph.add_edge(i,cpt,calcDistance2Points(heart,i,cpt))
 	return heart_graph
-
-def determinePerfusionVolumesMask(image,heart,threshold):
-	numPts = heart.GetNumberOfPoints()
-	heart_data = [0]*numPts
-	print('Assigning Perfusion Volumes...\n')
-	for ip in tqdm(range(0,numPts)):
-		value = image.GetPointData().GetArray(0).GetValue(image.FindPoint(heart.GetPoint(ip)))
-		if(value>threshold):
-			heart_data[ip] = value
-		else:
-			heart_data[ip] = -1
-
-	#generate summary data array for perfusion
-	data_array = vtk.vtkDoubleArray()
-	data_array.SetName('PerfusionVolumes')
-	for ptID in range(0,numPts):
-		data_array.InsertNextValue(heart_data[ptID])
-	heart.GetPointData().AddArray(data_array)
-	writeVTU(heart,'heart_mask.vtu')
-
-def determineCapPerfusionVolumes(caps,cap_center_coordinates,heart):
-	numPts = heart.GetNumberOfPoints()
-	heart_data = [0]*numPts
-	heart_graph = Graph()
-
-	cap_heart_points = set()
-	for i in cap_center_coordinates:
-		cap_heart_points.add(heart.FindPoint(i))
-	heart_graph = generateGraph(heart)
-	heart = multipleCapSourceDistance(heart,heart_graph,100000000000,cap_heart_points)
-
-	for i in range(0,numPts):
-		connnectedPt_list = getConnectedVerticesNotIncludingSeed(heart,i)
-		for j in range(0,connnectedPt_list.GetNumberOfIds()):
-			# new point to decide whether to add to patch, edge, or nothing (if already in edge)
-			cpt = connnectedPt_list.GetId(j)
-			heart_graph.add_edge(i,cpt,calcDistance2Points(heart,i,cpt))
-			heart_graph.add_edge(cpt,i,calcDistance2Points(heart,i,cpt))
-	print(cap_heart_points)
-	for i in range(0,len(cap_center_coordinates)):
-		if heart.FindPoint(cap_center_coordinates[i]) in heart_graph.nodes:
-			visited, path = dijsktra(heart_graph,heart.FindPoint(cap_center_coordinates[i]))
-			data_array = vtk.vtkDoubleArray()
-			data_array.SetName(caps[i] + '_distance_map')
-			for i in range(0,numPts):
-				if i in visited:
-					data_array.InsertNextValue(visited[i])
-				else:
-					data_array.InsertNextValue(-1)
-			heart.GetPointData().AddArray(data_array)
-			writeVTU(heart,'heart_distance_mapped.vtu')
-
-	for ip in range(0,numPts):
-		value = image.GetPointData().GetArray(0).GetValue(image.FindPoint(heart.GetPoint(ip)))
-		min,min_pt_index = minDistanceBetweenPointsGraph(heart_graph, heart, ip, cap_center_coordinates)
-		heart_data[ip] = min_pt_index
-	#generate summary data array for perfusion
-	data_array = vtk.vtkDoubleArray()
-	data_array.SetName('PerfusionVolumes')
-	for ptID in range(0,numPts):
-		data_array.InsertNextValue(heart_data[ptID])
-	heart.GetPointData().AddArray(data_array)
-
-	perfusion_data = np.zeros((len(caps),numPts))
-	for ip in range(0,len(heart_data)):
-		if(heart_data[ip]>=0):
-			perfusion_data[heart_data[ip],ip] = 1
-
-	#generate separate data array for each perfusion volume
-	#calculate the volume of each perfused area of each cap
-	volumes = []
-	LCA_data = np.zeros(numPts)
-	RCA_data = np.zeros(numPts)
-	RSA_data = np.zeros(numPts)
-	CA_data = np.zeros(numPts)
-	cap_pt_list = vtk.vtkIdList()
-	for i in tqdm(range(0,len(perfusion_data))):
-		data = vtk.vtkDoubleArray()
-		data.SetName(str(i) + '_' + caps[i])
-		for ip in range(0,numPts):
-			if(perfusion_data[i,ip]>0):
-				cap_pt_list.InsertNextId(ip)
-				if(caps[i].startswith('LCA')):
-					LCA_data[ip] = perfusion_data[i,ip]
-					CA_data[ip] = 1
-				elif(caps[i].startswith('RCA')):
-					RCA_data[ip] = perfusion_data[i,ip]
-					CA_data[ip] = 2
-				elif(caps[i].startswith('RSA')):
-					RSA_data[ip] = perfusion_data[i,ip]
-					CA_data[ip] = 3
-			data.InsertNextValue(perfusion_data[i,ip])
-		heart.GetPointData().AddArray(data)
-		Mass = extractRegionVolume(heart,cap_pt_list)
-		p2c = vtk.vtkPointDataToCellData()
-		p2c.SetInputData(heart)
-		p2c.PassPointDataOn()
-		warp = vtk.vtkWarpVector()
-		warp.SetInputConnection(p2c.GetOutputPort())
-		thresh = vtk.vtkThreshold()
-		thresh.SetInputConnection(warp.GetOutputPort())
-		thresh.ThresholdBetween(i,i)
-		thresh.SetInputArrayToProcess(1, 0, 0, 0, "PerfusionVolumes")
-		volumes.append(Mass.GetVolume())
-		cap_pt_list.Reset()
-
-	heart.GetPointData().AddArray(convert_np_array_to_vtk('LCA_all',LCA_data))
-	heart.GetPointData().AddArray(convert_np_array_to_vtk('RCA_all',RCA_data))
-	heart.GetPointData().AddArray(convert_np_array_to_vtk('RSA_all',RSA_data))
-	heart.GetPointData().AddArray(convert_np_array_to_vtk('CA_all',CA_data))
-
-	
-	return volumes
-
+##################################################################################################################################################################################################
 def determineCenterlinePerfusionVolumes(coordinates,weights,heart,out_filename):
 	numPts = heart.GetNumberOfPoints()
 	heart_data = [0]*numPts
@@ -656,6 +488,7 @@ def determineCenterlinePerfusionVolumes(coordinates,weights,heart,out_filename):
 	heart = multipleSourceDistance(heart,heart_graph,-1,cap_heart_points,distances,weight_dict)
 	writeVTU(heart,out_filename)
 
+#takes in a list of node ids, extracts that volume from the mesh, and returns a massProperties() object
 def extractRegionVolume(mesh,selection_nodes):
 	#Intialize variables
 	ids = vtk.vtkIdTypeArray()
@@ -700,25 +533,6 @@ def extractRegionVolume(mesh,selection_nodes):
 	Mass.Update()
 	return Mass
 
-def writeVolumesToFile(filename,cap_names,volumes):
-	outfile = open(filename,'w')
-	out_string = 'Cap,Volume_Perfusion' + '\n'
-	outfile.write(out_string)
-	for i in range(0,len(volumes)):
-		out_string = cap_names[i] + ',' + str(volumes[i]) + '\n'
-		outfile.write(out_string)
-	outfile.close()
-
-def writeFlowFile(filename,flow):
-	outfile = open(filename,'w')
-	out_string = '# Time (sec)\tFlow (micrometers^3/sec)' + '\n'
-	outfile.write(out_string)
-	out_string = '0.000000000' + '\t' + str(flow) + '\n'
-	outfile.write(out_string)
-	out_string = '1.000000000' + '\t' + str(flow) + '\n'
-	outfile.write(out_string)
-	outfile.close()
-
 def getCoords(centerline):
 	coords = []
 	for i in range(0,centerline.GetNumberOfPoints()):
@@ -758,18 +572,10 @@ def markTerritories(heart,vtk_centerline_data,centerlines):
 	heart.GetPointData().AddArray(vtk_data)
 	writeVTU(heart,'heart_all_centerline.vtu')
 
-def getCenterline(centerline_main,i):
-	return
-
-def update_progress(progress, total, vprint):  
-	vprint('\r[{0:10}]{1:>2}'.format('#' * int(progress * 10 /total), progress))
-
 def createParser():
-	parser = argparse.ArgumentParser(description='Finds volume of tissue perfused by each outlet.')
-	parser.add_argument('caps', type=str, help='the input model cap locations')
+	parser = argparse.ArgumentParser(description='Finds volume of tissue perfused by each outlet/centerline.')
 	parser.add_argument('image_data', type=str, help='the image filename (include file ext)')
 	parser.add_argument('heart', type=str, help='the heart filename (include file ext)')
-	parser.add_argument('data', type=str, help='the output filename (include file ext)')
 	parser.add_argument('vtu_data', type=str, help='the output vtu filename (include file ext)')
 	parser.add_argument('centerline', type=str, help='the input centerline (include file ext)')
 	parser.add_argument('-t', '-threshold', type=float, nargs='?', default=1, help='threshold of heart tissue')
@@ -799,19 +605,9 @@ def main(args):
 	        print(arg),
 	else:
 		vprint = lambda *a: None
-	heart = intializeVTU(args.heart,vprint)
+	heart = read_polydata(args.heart)
 	#determinePerfusionVolumesMask(image,heart,args.t)
 
-	# vtp files of the caps to calculate
-	caps = []
-	cap_names = []
-	for file in os.listdir(args.caps):
-		if file.endswith('.vtp') and not file.startswith('wall') and not file.startswith('aorta'):
-			cap_names.append(file[:len(file)-4])
-			cap = intializeVTP(args.caps + file,vprint)
-			caps.append(cap)
-
-	vprint('Found ' + str(len(caps)) + ' caps.')
 	#centerlines = ['LAD_CAR_004_centerlines.vtp','LCX_CAR_004_centerlines.vtp','RCA_CAR_004_centerlines.vtp']
 	#centerline_dict = {'LAD_CAR_004_centerlines':0,'LCX_CAR_004_centerlines':1,'RCA_CAR_004_centerlines':2}
 	#centerlines = ['RCA_CAR_004_centerlines.vtp']
@@ -824,25 +620,17 @@ def main(args):
 
 			cap_center_coordinates = calculateCapCenters(caps)
 			centerline = intializeVTP(os.path.join(centerline_dir,i),vprint)
-			
-			#centerline = getCenterline(centerline_main,i)
+
 			coords = getCoords(centerline)
 			weights = getWeights(centerline,option=0)
 			volumes = determineCenterlinePerfusionVolumes(coords,weights,heart,'heart_' + i.split('.')[0] + '.vtu')
 
-			#cap_volumes = determineCapPerfusionVolumes(cap_names,cap_center_coordinates,heart)
-			#vprint('volumes=',volumes)
-			#writeVolumesToFile(DATA_FILENAME,cap_names,volumes)
-			#volumes_dict = {}
-			#for i in range(0,len(cap_names)):
-			#	volumes_dict[cap_names[i]] = volumes[i]
 		centerline_heart = intializeVTU('heart_' + i.split('.')[0] + '.vtu',vprint)
 		vtk_centerline_data[i.split('.')[0]] = centerline_heart.GetPointData().GetArray('distance_map')
 	if len(vtk_centerline_data) == len(centerlines):
 		markTerritories(heart,vtk_centerline_data,centerline_dict)
 
-
-	writeVTU(heart,args.vtu_data)
+	write_polydata(heart,args.vtu_data)
 
 if __name__ == '__main__':
 	parser = createParser()
