@@ -66,6 +66,28 @@ def read_polydata(filename, datatype=None):
 
     return polydata
 
+def cut_plane(inp, origin, normal):
+    """
+    Cuts geometry at a plane
+    Args:
+        inp: InputConnection
+        origin: cutting plane origin
+        normal: cutting plane normal
+    Returns:
+        cut: cutter object
+    """
+    # define cutting plane
+    plane = vtk.vtkPlane()
+    plane.SetOrigin(origin[0], origin[1], origin[2])
+    plane.SetNormal(normal[0], normal[1], normal[2])
+
+    # define cutter
+    cut = vtk.vtkCutter()
+    cut.SetInputData(inp)
+    cut.SetCutFunction(plane)
+    cut.Update()
+    return cut
+
 def write_polydata(input_data, filename, datatype=None):
     """
     Write the given input data based on the file name extension.
@@ -269,7 +291,7 @@ def dijsktra_expand_properties(graph, initial, properties):
                 prop_dict = properties[min_node]
                 diff = [0,0,0]
                 vtk.vtkMath.Subtract(graph.get_node_coord(edge), graph.get_node_coord(min_node), diff)
-                multiplier = vtk.vtkMath.Dot(prop_dict['Tangent'],diff)
+                #multiplier = vtk.vtkMath.Dot(prop_dict['Tangent'],diff)
                 #print('multiplier set to '+str(multiplier))
             multiplier = 1
             #print('multiplier set to 1')
@@ -590,12 +612,13 @@ def maxDistanceBetweenPoints(model, seedPt, connectedPts_list):
             max = distance
     return max
 
+#returns all connected points of a seedPt (vtkID type) in a polydata object (model) within a radius
 def getConnectedVerticesWithinRadius(model, seedPt, radius):
     cell_list = vtk.vtkIdList()
     connectedPts_list = vtk.vtkIdList()
     model.GetPointCells(seedPt,cell_list)
     radiusReached = 0
-    max_iter = 500
+    max_iter = 50
     prev_iter = -1
     while (radiusReached == 0 and connectedPts_list.GetNumberOfIds()<max_iter and connectedPts_list.GetNumberOfIds()>prev_iter):
         prev_iter = connectedPts_list.GetNumberOfIds()
@@ -613,11 +636,9 @@ def getConnectedVerticesWithinRadius(model, seedPt, radius):
                 for j in xrange(0,connectedCell_list.GetNumberOfIds()):
                     cell_list.InsertUniqueId(connectedCell_list.GetId(j))
 
-
-
-
     return connectedPts_list
 
+#returns all directly connected points of a seedPt (vtkID type) in a polydata object (model)
 def getConnectedVerticesNotIncludingSeed(model, seedPt):
     cell_list = vtk.vtkIdList()
     connectedPts_list = vtk.vtkIdList()
@@ -630,6 +651,7 @@ def getConnectedVerticesNotIncludingSeed(model, seedPt):
                 connectedPts_list.InsertUniqueId(pt_list.GetId(k))
     return connectedPts_list
 
+#Averages radius data for each point with the directly surrounding, connected points of the mesh (surface or volume)
 def smoothAll(mesh):
     numPts = mesh.GetNumberOfPoints()
     data = vtk.vtkDoubleArray()
@@ -649,8 +671,8 @@ def smoothAll(mesh):
         radius = mesh.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(p)
         if radius > .5:
             radius = .5
-        closePoints = getConnectedVerticesNotIncludingSeed(mesh, p)
-        #closePoints = getConnectedVerticesWithinRadius(mesh, p, 1.5*radius)
+        #closePoints = getConnectedVerticesNotIncludingSeed(mesh, p)
+        closePoints = getConnectedVerticesWithinRadius(mesh, p, 1.5*radius)
         #locator.FindPointsWithinRadius(radius*1.5, mesh.GetPoint(p), closePoints)
         radius_avg = 0
         for cpt in range(0,closePoints.GetNumberOfIds()):
@@ -720,36 +742,46 @@ def checkSurfaceInterior(surface,surface_point,test_point):
     # else:
     #     return False
 
+#Maps point data arrays from centerline to each wall in a mesh-surfaces dir separately
+#Cleans bifurcation regions by ensuring opposite points on a given surface have the same radius value (takes max if not true)
 def AssignWallIds(wall_dir,volume,centerline):
+    #Initialize point locator for centerline
     dataset = vtk.vtkPolyData();
     dataset.SetPoints(centerline.GetPoints());
     locator = vtk.vtkPointLocator();
     locator.Initialize();
     locator.SetDataSet(dataset);
     locator.BuildLocator();
+    #Initialize data objects
     properties = dict()
     walls = []
+
+    #Add all wall names for each branch
     for file in os.listdir(wall_dir):
         if file.startswith('wall_'):
             walls.append(os.path.join(wall_dir,file))
-    wallId = dict()
 
-    filler = vtk.vtkFillHolesFilter()
-
+    #Loop through walls and assign data from closest centerline
     for i_wall in tqdm(range(0,len(walls))):
+        #Read wall surface and generate normals
         wall = read_polydata(walls[i_wall])
-        filler.SetInputData(wall)
-        filler.Update()
-        write_polydata(filler.GetOutput(),'test_filled_wall.vtp')
         wall = generateSurfaceNormals(wall)
+
         numPts_wall = wall.GetNumberOfPoints()
         centerline_pts = vtk.vtkIdList()
+        
+        #loop through each point in the wall surface and find closest centerline point within radius
         for p in tqdm(range(0,numPts_wall)):
+            
             surface_point = wall.GetPoint(p)
             radius = centerline.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(locator.FindClosestPoint(surface_point))
+            #Contains the points whose cell is normal to the tangent of the closest centerline
             norm_pts = []
+
+            #Contains a growing list of test points on the centerline that surround the closest centerline point
             seed_pts = vtk.vtkIdList()
             seed_pts.InsertNextId(locator.FindClosestPoint(surface_point))
+
             prev_numIds = -1
             multiplier = 2
             max_norm = checkSurfaceInterior(wall,p,centerline.GetPoint(seed_pts.GetId(0)))
@@ -845,11 +877,269 @@ def cleanSurfaceData(mesh,properties):
     #exit()
     return properties_cleaned
 
+def extractRegionVolume(mesh,selection_nodes):
+    #Intialize variables
+    ids = vtk.vtkIdTypeArray()
+    cell_nodes = vtk.vtkIdList()
+    cell_vtk_Id_list = vtk.vtkIdList()
+    cellIds = vtk.vtkIdTypeArray()
+    ids.SetNumberOfComponents(1)
+    
+    #Determines the cells enclosed by selection_nodes (which are points)
+    vprint('Number of nodes in this volume: ', selection_nodes.GetNumberOfIds())
+    for i in range(0,selection_nodes.GetNumberOfIds()):
+        ids.InsertNextValue(selection_nodes.GetId(i))
+        mesh.GetPointCells(selection_nodes.GetId(i), cell_nodes)
+        for j in range(0,cell_nodes.GetNumberOfIds()):
+            cell_vtk_Id_list.InsertUniqueId(cell_nodes.GetId(j))
+
+    #Converts the vtkIdList into vtkIdTypeArray
+    for i in range(0,cell_vtk_Id_list.GetNumberOfIds()):
+        cellIds.InsertNextValue(cell_vtk_Id_list.GetId(i))
+    vprint('Number of cells in this volume: ', cell_vtk_Id_list.GetNumberOfIds())
+    #Creates the selection object to extract the subset of cells from the mesh
+    region=vtk.vtkExtractSelection()
+    region.SetInputData(0,mesh)
+    tempCells = vtk.vtkSelectionNode()
+    tempCells.SetFieldType(vtk.vtkSelectionNode.CELL)
+    tempCells.SetContentType(vtk.vtkSelectionNode.INDICES)
+    tempCells.SetSelectionList(cellIds)
+    tempSelection = vtk.vtkSelection()
+    tempSelection.AddNode(tempCells)
+    region.SetInputData(1,tempSelection)
+    region.Update()
+
+    #Outputs the mesh as an Mass object
+    output = vtk.vtkPolyData()
+    output.ShallowCopy(region.GetOutput())
+    vprint(region.GetOutput().GetNumberOfCells())
+    dssf = vtk.vtkDataSetSurfaceFilter()
+    dssf.SetInputConnection(region.GetOutputPort())
+    dssf.Update()
+    return dssf.GetOutput()
+
+def getmin_node(vtkIdList):
+    min_node = vtkIdList.GetId(0)
+    for i in range(0,vtkIdList.GetNumberOfIds()):
+        if min_node > vtkIdList.GetId(i):
+            min_node = vtkIdList.GetId(i)
+    return min_node
+
+def getmax_node(vtkIdList):
+    max_node = vtkIdList.GetId(0)
+    for i in range(0,vtkIdList.GetNumberOfIds()):
+        if max_node < vtkIdList.GetId(i):
+            max_node = vtkIdList.GetId(i)
+    return max_node
+
+def BranchSurface(centerline,surface,wall_dir):
+    wall_branchIds = defaultdict(set)
+    data = vtk.vtkDoubleArray()
+    data.SetName('MaximumInscribedSphereRadius')
+    data.SetNumberOfValues(surface.GetNumberOfPoints())
+    data.Fill(-1)
+    surface.GetPointData().AddArray(data)
+    data = vtk.vtkDoubleArray()
+    data.SetName('ModelFaceId')
+    data.SetNumberOfValues(surface.GetNumberOfPoints())
+    data.Fill(-1)
+    surface.GetPointData().AddArray(data)
+    data = vtk.vtkDoubleArray()
+    data.SetName('BranchIdTmp')
+    data.SetNumberOfValues(surface.GetNumberOfPoints())
+    data.Fill(-1)
+    surface.GetPointData().AddArray(data)
+    #Initialize point locator for centerline
+    dataset = vtk.vtkPolyData();
+    dataset.SetPoints(surface.GetPoints());
+    locator = vtk.vtkPointLocator();
+    locator.Initialize();
+    locator.SetDataSet(dataset);
+    locator.BuildLocator();
+    #Initialize point locator for centerline
+    dataset = vtk.vtkPolyData();
+    dataset.SetPoints(centerline.GetPoints());
+    cl_locator = vtk.vtkPointLocator();
+    cl_locator.Initialize();
+    cl_locator.SetDataSet(dataset);
+    cl_locator.BuildLocator();
+    #loop through each wall branch surface and make a dict of wall name and a set of global node Ids that make up that branch
+    wall_gIds = defaultdict(set)
+    gIds_wall = dict()
+    walls = []
+    wallId = dict()
+    faceId_wall = dict()
+    #Add all wall names for each branch
+    for file in os.listdir(wall_dir):
+        if file.startswith('wall_'):
+            walls.append(os.path.join(wall_dir,file))
+
+    #Loop through walls and assign data from closest centerline
+    for i_wall in tqdm(range(0,len(walls))):
+        #Read wall surface
+        wall = read_polydata(walls[i_wall])
+        for wpt in range(0,wall.GetNumberOfPoints()):
+            gId = wall.GetPointData().GetArray('GlobalNodeID').GetValue(wpt)
+            wall_gIds[walls[i_wall]].add(gId)
+            gIds_wall[gId] = walls[i_wall]
+            wallId[gId] = i_wall
+            faceId_wall[i_wall] = walls[i_wall]
+    for p in range(0,surface.GetNumberOfPoints()):
+        gId = surface.GetPointData().GetArray('GlobalNodeID').GetValue(p)
+        wall_id = wallId[gId]
+
+        surface.GetPointData().GetArray('ModelFaceId').SetValue(p,wall_id)
+    print(len(list(wall_gIds)))
+    #loop through each branchId and assign the branchId to a wall name depending on the closest surface point the mid point of the branch segment is
+    [BranchId_min, BranchId_max] = centerline.GetPointData().GetArray('BranchIdTmp').GetRange()
+    for branchId in tqdm(range(int(BranchId_min),int(BranchId_max))):
+        Branch_PtIds = extractRegion(centerline,branchId,'BranchIdTmp')
+        branch_seg = extractRegionVolume(centerline,Branch_PtIds)
+        write_polydata(branch_seg,'branch_seg.vtp')
+        p1_node = 0
+        p2_node = branch_seg.GetNumberOfPoints()-1
+        pmid_node = int((p2_node-p1_node)/2.0+p1_node)
+        print(p1_node,p2_node,pmid_node)
+        #if the centerline point is at a bifurcation take a slice and return the wall name that appears at the most nodes in the slice
+        # if branch_seg.GetPointData().GetArray('BranchId').GetValue(pmid_node)==-1:
+        #     closest_surface_pt = locator.FindClosestPoint(branch_seg.GetPoint(pmid_node))
+        #     slice = slice_vessel(surface,branch_seg.GetPoint(p2_node),branch_seg.GetPointData().GetArray('CenterlineSectionNormal').GetTuple(p2_node))
+        #     surface_wall_id = []
+        #     for sp in range(0,slice.GetNumberOfPoints()):
+        #         surface_pt = surface.FindPoint(slice.GetPoint(sp))
+        #         surface_wall_id.append(surface.GetPointData().GetArray('ModelFaceId').GetValue(surface_pt))
+        #     wall_name = faceId_wall[max(set(surface_wall_id), key=surface_wall_id.count)]
+        #     branchIdtemp = centerline.GetPointData().GetArray('BranchIdTmp').GetValue(cl_locator.FindClosestPoint(branch_seg.GetPoint(pmid_node)))
+        #     wall_branchIds[wall_name].add(branchIdtemp)
+        # else:
+        closest_surface_pt = locator.FindClosestPoint(branch_seg.GetPoint(pmid_node))
+        gId = surface.GetPointData().GetArray('GlobalNodeID').GetValue(closest_surface_pt)
+        print(gId)
+        #print(branchId,os.path.basename(gIds_wall[gId]))
+        branchIdtemp = centerline.GetPointData().GetArray('BranchIdTmp').GetValue(cl_locator.FindClosestPoint(branch_seg.GetPoint(pmid_node)))
+        
+        wall_branchIds[gIds_wall[gId]].add(branchIdtemp)
+    #ensure all branchIdstmp are accounted for
+    
+    print(len(list(wall_branchIds)))
+    
+    #make a list of centerline objects that describes an entire wall surface of a branch
+    branch_centerlines = dict()
+    for wall in tqdm(wall_branchIds):
+        ptIds = vtk.vtkIdList()
+        for pt in range(0,centerline.GetNumberOfPoints()):
+            #first check if centerline point is in a branch that was identified in the last loop
+            if centerline.GetPointData().GetArray('BranchIdTmp').GetValue(pt) in wall_branchIds[wall]:
+                ptIds.InsertUniqueId(pt)    
+        cdataset = vtk.vtkPolyData()
+        if os.path.basename(wall)=='wall_LCA_main.vtp':
+            write_polydata(extractRegionVolume(centerline,ptIds),'wall_LCA_main_cl.vtp')
+        cdataset.SetPoints(extractRegionVolume(centerline,ptIds).GetPoints())
+        clocator = vtk.vtkPointLocator()
+        clocator.Initialize()
+        clocator.SetDataSet(cdataset)
+        clocator.BuildLocator()
+        branch_centerlines[wall] = extractRegionVolume(centerline,ptIds)
+    #loop through each surface point and assign closest radius only on centerlines that have BranchTempId that is in the wall_branchIds set
+    # for pt in tqdm(range(0,surface.GetNumberOfPoints())):
+    #     gId = surface.GetPointData().GetArray('GlobalNodeID').GetValue(pt)
+    #     ModelFaceId = surface.GetPointData().GetArray('ModelFaceId').GetValue(pt)
+    #     if(faceId_wall[ModelFaceId] in branch_centerlines):
+    #         cdataset = vtk.vtkPolyData()
+    #         cdataset.SetPoints(branch_centerlines[gIds_wall[gId]])
+    #         clocator = vtk.vtkPointLocator()
+    #         clocator.Initialize()
+    #         clocator.SetDataSet(cdataset)
+    #         clocator.BuildLocator()
+    #         closest_centerline_pt = clocator.FindClosestPoint(surface.GetPoint(pt))
+    #         radius = centerline.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(closest_centerline_pt)        
+    #         branchId = centerline.GetPointData().GetArray('BranchIdTmp').GetValue(closest_centerline_pt)
+    #         surface.GetPointData().GetArray('MaximumInscribedSphereRadius').SetValue(pt,radius)
+    #         surface.GetPointData().GetArray('BranchIdTmp').SetValue(pt,branchId)
+    #loop through each wall surface centerline, isolate the wall surface, take slices along centerline to match radius, and then map those slice points to the surface mesh
+    for i_wall in tqdm(range(0,len(walls))):
+        #Read wall surface
+        wall = read_polydata(walls[i_wall])
+        if walls[i_wall] in branch_centerlines:
+            branch_cl = branch_centerlines[walls[i_wall]]
+            for cp in range(0,branch_cl.GetNumberOfPoints()):
+                slice = slice_vessel_sphere(wall,branch_cl.GetPoint(cp),branch_cl.GetPointData().GetArray('CenterlineSectionNormal').GetTuple(cp),branch_cl.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(cp)*3)
+                for sp in range(0,slice.GetNumberOfPoints()):
+                    surface_pt = surface.FindPoint(slice.GetPoint(sp))
+                    surface.GetPointData().GetArray('MaximumInscribedSphereRadius').SetValue(surface_pt,branch_cl.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(cp))
+    return surface
+
+def clip_sphere(inp_3d,origin,radius):
+    """
+    Clips geometry in sphere
+    Args:
+    inp: InputConnection
+    origin: clipping sphere origin
+    normal: clipping sphere radius
+    Returns:
+    cut: clipping object
+    """
+    # define clipping sphere
+    sphere = vtk.vtkSphere()
+    sphere.SetCenter(origin)
+    sphere.SetRadius(radius*1.1)
+
+    # define cutter
+    clip = vtk.vtkClipPolyData()
+    clip.SetInputData(inp_3d.GetOutput())
+    clip.SetClipFunction(sphere)
+    clip.InsideOutOn()
+    clip.Update()
+    return clip
+
+def slice_vessel(inp_3d, origin, normal):
+    """
+    Slice 3d geometry at certain plane
+    Args:
+        inp_1d: vtk InputConnection for 1d centerline
+        inp_3d: vtk InputConnection for 3d volume model
+        origin: plane origin
+        normal: plane normal
+
+    Returns:
+        Integration object
+    """
+    # cut 3d geometry
+    cut_3d = cut_plane(inp_3d, origin, normal)
+    # extract region closest to centerline
+    con = connectivity(cut_3d, origin)
+    dssf = vtk.vtkDataSetSurfaceFilter()
+    dssf.SetInputConnection(con.GetOutputPort())
+    dssf.Update()
+    return dssf.GetOutput()
+
+def slice_vessel_sphere(inp_3d, origin, normal, radius):
+    """
+    Slice 3d geometry at certain plane
+    Args:
+        inp_1d: vtk InputConnection for 1d centerline
+        inp_3d: vtk InputConnection for 3d volume model
+        origin: plane origin
+        normal: plane normal
+
+    Returns:
+        Integration object
+    """
+    # cut 3d geometry
+    cut_3d = cut_plane(inp_3d, origin, normal)
+    clip_3d = clip_sphere(cut_3d,origin, radius)
+    # extract region closest to centerline
+    con = connectivity(clip_3d, origin)
+    dssf = vtk.vtkDataSetSurfaceFilter()
+    dssf.SetInputConnection(con.GetOutputPort())
+    dssf.Update()
+    return dssf.GetOutput()
 
 def createParser():
     parser = argparse.ArgumentParser(description='Maps diameter from given centerline to the surface of a given 3D model.')
     parser.add_argument('centerline', type=str, help='the centerline to map diameters from')
     parser.add_argument('surface', type=str, help='the surface to map onto')
+    parser.add_argument('volume', type=str, help='the volume to map onto')
     parser.add_argument('wall_dir', type=str, help='the folder location of the mesh surfaces')
     parser.add_argument('-f','-file', type=str, nargs='?', default = None, help='the pickle filename with data')
     parser.add_argument('-out', type=str, nargs='?', default = 'default.vtu', help='the vtu filename with data')
@@ -858,13 +1148,23 @@ def createParser():
     return parser
 
 def main(args):
-    mesh = read_polydata(args.surface)
+    mesh = read_polydata(args.volume)
+    surface = read_polydata(args.surface)
     centerline = read_polydata(args.centerline)
     cleaner = vtk.vtkCleanPolyData()
     cleaner.SetInputData(centerline)
     cleaner.PointMergingOn()
     cleaner.Update()
     centerline = cleaner.GetOutput()
+    global vprint
+    if args.v:
+        def vprint(*args):
+          # Print each argument separately so caller doesn't need to
+          # stuff everything to be printed into a single string
+          for arg in args:
+            print(arg),
+    else:
+        vprint = lambda *a: None
     #surface = BranchSurface(surface, centerline, 'MaximumInscribedSphereRadius', 'BranchId', 'BifurcationId')
     # curvature = vtk.vtkCurvatures()
     # curvature.AddInputData(surface)
@@ -873,54 +1173,72 @@ def main(args):
     # surface = curvature.GetOutput()
     getCenterlineTangents(centerline)
     #print(centerline.GetPointData().GetArray('Tangent').GetTuple(10))
+    print(args.f)
     if(args.f==None and args.o==0):
         numPts = mesh.GetNumberOfPoints()
         data = [0]*numPts
-        centerline_points = set()
+        seed_pts = set()
         properties = {}
         distances = {}
-        centerline_seed_pts = vtk.vtkDoubleArray()
-        centerline_seed_pts.SetName('centerline_seed_pts')
-        centerline_seed_pts.SetNumberOfValues(mesh.GetNumberOfPoints())
-        centerline_seed_pts.Fill(-1)
+        seed_pts_array = vtk.vtkDoubleArray()
+        seed_pts_array.SetName('seed_pts_array')
+        seed_pts_array.SetNumberOfValues(mesh.GetNumberOfPoints())
+        seed_pts_array.Fill(-1)
         for j in range(0,centerline.GetPointData().GetNumberOfArrays()):
                 data = vtk.vtkDoubleArray()
                 data.SetName(centerline.GetPointData().GetArray(j).GetName())
                 data.SetNumberOfValues(mesh.GetNumberOfPoints())
                 data.Fill(-1)
                 mesh.GetPointData().AddArray(data)
+        #Add centerline points as seed points
+        print('Adding centerline seed pts')
         for i in tqdm(range(0,centerline.GetNumberOfPoints())):
             pt = mesh.FindPoint(centerline.GetPoint(i))
-            centerline_points.add(pt)
-            centerline_seed_pts.SetValue(pt,i)
+            seed_pts.add(pt)
+            seed_pts_array.SetValue(pt,i)
             property_dict = dict()
             for j in range(0,centerline.GetPointData().GetNumberOfArrays()):
                 property_dict[str(centerline.GetPointData().GetArray(j).GetName())] = centerline.GetPointData().GetArray(j).GetTuple(i)                       
             properties[mesh.FindPoint(centerline.GetPoint(i))] = property_dict
             distances[mesh.FindPoint(centerline.GetPoint(i))] = calcDistance2Points(mesh,mesh.FindPoint(centerline.GetPoint(i)),centerline.GetPoint(i))
-        print(properties[mesh.FindPoint(centerline.GetPoint(10))])
-        mesh.GetPointData().AddArray(centerline_seed_pts)
+        #Add surface points as seed points
+        print('Adding surface seed pts')
+        for i in tqdm(range(0,surface.GetNumberOfPoints())):
+            pt = mesh.FindPoint(surface.GetPoint(i))
+            if(surface.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(pt)>0):
+                seed_pts.add(pt)
+                seed_pts_array.SetValue(pt,i)
+                property_dict = dict()
+                for j in range(0,surface.GetPointData().GetNumberOfArrays()):
+                    property_dict[str(surface.GetPointData().GetArray(j).GetName())] = surface.GetPointData().GetArray(j).GetTuple(i)                       
+                properties[mesh.FindPoint(surface.GetPoint(i))] = property_dict
+                distances[mesh.FindPoint(surface.GetPoint(i))] = calcDistance2Points(mesh,mesh.FindPoint(surface.GetPoint(i)),surface.GetPoint(i))
+
+        print('Found '+str(len(list(properties)))+' seed pts.')
+        
+        mesh.GetPointData().AddArray(seed_pts_array)
         write_polydata(mesh,args.surface.split('.')[0]+'_mapped.vtu')
         graph = generateGraph(mesh)
-        mesh = multipleSourceDistance(mesh,graph,-1,centerline_points,distances,properties)
+        mesh = multipleSourceDistance(mesh,graph,-1,seed_pts,distances,properties)
         f = open("file.pkl","wb")
         pickle.dump(graph.node_properties,f)
         f.close()
         mesh = addPropertiesFromGraph(mesh,graph)
     elif args.o==1:
         mesh,properties = mapToNClosestCenterline(centerline,mesh,50)
-        f = open("_mapped50.pkl","wb")
+        f = open("_50MAPPED.pkl","wb")
         pickle.dump(properties,f)
         f.close()
     else:
         #node_properties = pickle.load(open(args.f,'rb'))
         #mesh = read_polydata(args.surface)
-        mesh = generateSurfaceNormals(mesh)
-        properties = AssignWallIds(args.wall_dir,mesh,centerline)
-        f = open("wallIds.pkl","wb")
-        pickle.dump(properties,f)
-        f.close()
-        mesh = addPropertiesFromDict(mesh,properties)
+        #mesh = generateSurfaceNormals(mesh)
+            #properties = AssignWallIds(args.wall_dir,mesh,centerline)
+            #f = open("wallIds.pkl","wb")
+            #pickle.dump(properties,f)
+            #f.close()
+        #mesh = addPropertiesFromDict(mesh,node_properties)
+        mesh = BranchSurface(centerline,surface,args.wall_dir)
         #mesh = smoothBifurcations2(centerline,mesh)
         #mesh = smoothAll(mesh)
     
