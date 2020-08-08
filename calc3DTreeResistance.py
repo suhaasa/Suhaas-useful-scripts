@@ -424,11 +424,13 @@ def getBranchResistances2(centerline,volume,connectivity,SEG_COVERAGE):
 	#loop through each branchId
 	[BranchId_min, BranchId_max] = centerline.GetPointData().GetArray('BranchId').GetRange()
 	for branchId in tqdm(connectivity):
+		print('branch is ',branchId)
 		Branch_PtIds = extractRegion(centerline,branchId,'BranchId')
-		if(branchId!=477):
+		if(branchId!=0):
 			parent_p1_node = getmin_node(Branch_PtIds)
 		else:
-			parent_p1_node = getmin_node(Branch_PtIds) + 5
+			parent_p1_node = getmin_node(Branch_PtIds) + 15
+			continue
 		parent_p2_node = int(Branch_PtIds.GetNumberOfIds()*SEG_COVERAGE)+getmin_node(Branch_PtIds)
 		print('slice1')
 		slice_1 = slice_vessel_sphere(volume, centerline.GetPoint(parent_p1_node), centerline.GetPointData().GetArray('CenterlineSectionNormal').GetTuple(parent_p1_node),centerline.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(parent_p1_node))
@@ -442,8 +444,6 @@ def getBranchResistances2(centerline,volume,connectivity,SEG_COVERAGE):
 			child_p1_node = getmin_node(Branch_PtIds)
 			child_p2_node = int(Branch_PtIds.GetNumberOfIds()*SEG_COVERAGE)+getmin_node(Branch_PtIds)
 			print(child_p1_node,child_p2_node,Branch_PtIds.GetNumberOfIds())
-			if childId==477:
-				continue
 			child_slice_1 = slice_vessel_sphere(volume, centerline.GetPoint(child_p1_node), centerline.GetPointData().GetArray('CenterlineSectionNormal').GetTuple(child_p1_node),centerline.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(child_p1_node))
 			child_slice1_flow,child_slice1_pressure,child_slice1_area = calculateFlowPressure(child_slice_1)
 			child_slice_2 = slice_vessel_sphere(volume, centerline.GetPoint(child_p2_node), centerline.GetPointData().GetArray('CenterlineSectionNormal').GetTuple(child_p2_node),centerline.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(child_p2_node))
@@ -462,7 +462,7 @@ def getBranchResistances2(centerline,volume,connectivity,SEG_COVERAGE):
 			print('flow',branch_flow)
 			mapBranch_resistances({childId:segment_pdiff/branch_flow},centerline,'Segment_Resistances')
 			branch_resistances[childId] = branch_pdiff/branch_flow
-	Branch_PtIds = extractRegion(centerline,0,'BranchId')
+	Branch_PtIds = extractRegion(centerline,389,'BranchId')
 	parent_p1_node = getmin_node(Branch_PtIds) + 5
 	parent_p2_node = int(Branch_PtIds.GetNumberOfIds()*SEG_COVERAGE)+getmin_node(Branch_PtIds)
 	slice_1 = slice_vessel_sphere(volume, centerline.GetPoint(parent_p1_node), centerline.GetPointData().GetArray('CenterlineSectionNormal').GetTuple(parent_p1_node),centerline.GetPointData().GetArray('MaximumInscribedSphereRadius').GetValue(parent_p1_node))
@@ -471,7 +471,7 @@ def getBranchResistances2(centerline,volume,connectivity,SEG_COVERAGE):
 	slice2_flow,slice2_pressure,slice2_area = calculateFlowPressure(slice_2)
 	branch_pdiff = time_average(slice1_pressure) - time_average(slice2_pressure)
 	branch_flow = time_average(slice2_flow)
-	branch_resistances[0] = branch_pdiff/branch_flow
+	branch_resistances[389] = branch_pdiff/branch_flow
 	return branch_resistances
 
 def time_average(value):
@@ -839,7 +839,8 @@ def main(args):
 	f = open("connectivity.pkl","wb")
 	pickle.dump(connectivity,f)
 	f.close()
-	connectivity[0] = [1, 194, 70, 22]
+	connectivity[389] = [1, 14, 51, 117]
+	connectivity.pop(0)
 	print(connectivity)
 
 	#for every branch Id this dict contains its resistance
@@ -861,7 +862,7 @@ def main(args):
 	#starting branch
 	seed_branch = 0
 	#the current parent branch
-	parent_branch = 0
+	parent_branch = 389
 
 	global resistance
 	resistance = 0	
