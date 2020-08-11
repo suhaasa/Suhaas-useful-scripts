@@ -11,6 +11,144 @@ from tqdm import tqdm
 import pickle
 import math
 
+# Read a vtp file and return the polydata
+def read_polydata(filename, datatype=None):
+    """
+    Load the given file, and return a vtkPolyData object for it.
+    Args:
+        filename (str): Path to input file.
+        datatype (str): Additional parameter for vtkIdList objects.
+    Returns:
+        polyData (vtkSTL/vtkPolyData/vtkXMLStructured/
+                    vtkXMLRectilinear/vtkXMLPolydata/vtkXMLUnstructured/
+                    vtkXMLImage/Tecplot): Output data.
+    """
+
+    # Check if file exists
+    if not os.path.exists(filename):
+        raise RuntimeError("Could not find file: %s" % filename)
+
+    # Check filename format
+    fileType = filename.split(".")[-1]
+    if fileType == '':
+        raise RuntimeError('The file does not have an extension')
+
+    # Get reader
+    if fileType == 'stl':
+        reader = vtk.vtkSTLReader()
+        reader.MergingOn()
+    elif fileType == 'vtk':
+        reader = vtk.vtkPolyDataReader()
+    elif fileType == 'vtp':
+        reader = vtk.vtkXMLPolyDataReader()
+    elif fileType == 'vts':
+        reader = vtk.vtkXMinkorporereLStructuredGridReader()
+    elif fileType == 'vtr':
+        reader = vtk.vtkXMLRectilinearGridReader()
+    elif fileType == 'vtu':
+        reader = vtk.vtkXMLUnstructuredGridReader()
+    elif fileType == "vti":
+        reader = vtk.vtkXMLImageDataReader()
+    elif fileType == "np" and datatype == "vtkIdList":
+        result = np.load(filename).astype(np.int)
+        id_list = vtk.vtkIdList()
+        id_list.SetNumberOfIds(result.shape[0])
+        for i in range(result.shape[0]):
+            id_list.SetId(i, result[i])
+        return id_list
+    else:
+        raise RuntimeError('Unknown file type %s' % fileType)
+
+    # Read
+    reader.SetFileName(filename)
+    reader.Update()
+    polydata = reader.GetOutput()
+
+    return polydata
+
+def cut_plane(inp, origin, normal):
+    """
+    Cuts geometry at a plane
+    Args:
+        inp: InputConnection
+        origin: cutting plane origin
+        normal: cutting plane normal
+    Returns:
+        cut: cutter object
+    """
+    # define cutting plane
+    plane = vtk.vtkPlane()
+    plane.SetOrigin(origin[0], origin[1], origin[2])
+    plane.SetNormal(normal[0], normal[1], normal[2])
+
+    # define cutter
+    cut = vtk.vtkCutter()
+    cut.SetInputData(inp)
+    cut.SetCutFunction(plane)
+    cut.Update()
+    return cut
+
+def write_polydata(input_data, filename, datatype=None):
+    """
+    Write the given input data based on the file name extension.
+    Args:
+        input_data (vtkSTL/vtkPolyData/vtkXMLStructured/
+                    vtkXMLRectilinear/vtkXMLPolydata/vtkXMLUnstructured/
+                    vtkXMLImage/Tecplot): Input data.
+        filename (str): Save path location.
+        datatype (str): Additional parameter for vtkIdList objects.
+    """
+    # Check filename format
+    fileType = filename.split(".")[-1]
+    if fileType == '':
+        raise RuntimeError('The file does not have an extension')
+
+    # Get writer
+    if fileType == 'stl':
+        writer = vtk.vtkSTLWriter()
+    elif fileType == 'vtk':
+        writer = vtk.vtkPolyDataWriter()
+    elif fileType == 'vts':
+        writer = vtk.vtkXMLStructuredGridWriter()
+    elif fileType == 'vtr':
+        writer = vtk.vtkXMLRectilinearGridWriter()
+    elif fileType == 'vtp':
+        writer = vtk.vtkXMLPolyDataWriter()
+    elif fileType == 'vtu':
+        writer = vtk.vtkXMLUnstructuredGridWriter()
+    elif fileType == "vti":
+        writer = vtk.vtkXMLImageDataWriter()
+    elif fileType == "np" and datatype == "vtkIdList":
+        output_data = np.zeros(input_data.GetNumberOfIds())
+        for i in range(input_data.GetNumberOfIds()):
+            output_data[i] = input_data.GetId(i)
+        output_data.dump(filename)
+        return
+    else:
+        raise RuntimeError('Unknown file type %s' % fileType)
+
+    # Set filename and input
+    writer.SetFileName(filename)
+    writer.SetInputData(input_data)
+    writer.Update()
+
+    # Write
+    writer.Write()
+
+def calcDistance2Points(model, pt1,pt2):
+    if(type(pt1) is int or type(pt1) is long):
+        x1,y1,z1 = model.GetPoint(pt1)
+    elif(type(pt1) is list):
+        x1,y1,z1 = pt1[0],pt1[1],pt1[2]
+    else:
+        vprint(type(pt1))
+    if(type(pt2) is int or type(pt2) is long):
+        x2,y2,z2 = model.GetPoint(pt2)
+    else:
+        x2,y2,z2 = pt2[0],pt2[1],pt2[2]
+    distance = ((x1-x2)**2 + (y1-y2)**2 + (z1-z2)**2)**(.5)
+    return distance
+
 class Graph:
     def __init__(self):
         self.nodes = set()
@@ -288,44 +426,39 @@ def fastMarching(heart_graph,heart,seedPts):
 	return pt_dist
 
 def addPropertiesFromDict(mesh,dict):
-for p in range(0,mesh.GetNumberOfPoints()):
-    node = mesh.GetPointData().GetArray('GlobalNodeID').GetValue(p)
-    if node >= 0 and node < mesh.GetNumberOfPoints() and node in dict:
-        property_dict = dict[node]
-        for array_name in property_dict:
-            if not mesh.GetPointData().HasArray(array_name):
-                data = vtk.vtkDoubleArray()
-                data.SetName(array_name)
+    for p in range(0,mesh.GetNumberOfPoints()):
+        node = mesh.GetPointData().GetArray('GlobalNodeID').GetValue(p)
+        if node >= 0 and node < mesh.GetNumberOfPoints() and node in dict:
+            property_dict = dict[node]
+            for array_name in property_dict:
+                if not mesh.GetPointData().HasArray(array_name):
+                    data = vtk.vtkDoubleArray()
+                    data.SetName(array_name)
+                    if(type(property_dict[array_name]) is float or type(property_dict[array_name]) is int):
+                        data.SetNumberOfComponents(1)
+                    else:
+                        data.SetNumberOfComponents(len(property_dict[array_name]))
+                    data.SetNumberOfTuples(mesh.GetNumberOfPoints())
+                    data.Fill(-1)
+                    mesh.GetPointData().AddArray(data)
+                    print(array_name + ' data array added to mesh.')
+                    print(data.GetNumberOfTuples())
                 if(type(property_dict[array_name]) is float or type(property_dict[array_name]) is int):
-                    data.SetNumberOfComponents(1)
+                    mesh.GetPointData().GetArray(array_name).SetValue(p,property_dict[array_name])
                 else:
-                    data.SetNumberOfComponents(len(property_dict[array_name]))
-                data.SetNumberOfTuples(mesh.GetNumberOfPoints())
-                data.Fill(-1)
-                mesh.GetPointData().AddArray(data)
-                print(array_name + ' data array added to mesh.')
-                print(data.GetNumberOfTuples())
-            if(type(property_dict[array_name]) is float or type(property_dict[array_name]) is int):
-                mesh.GetPointData().GetArray(array_name).SetValue(p,property_dict[array_name])
-            else:
-                mesh.GetPointData().GetArray(array_name).SetTuple(p,property_dict[array_name])
-return mesh
+                    mesh.GetPointData().GetArray(array_name).SetTuple(p,property_dict[array_name])
+    return mesh
 
 def createParser():
     parser = argparse.ArgumentParser(description='Maps diameter from given centerline to the surface of a given 3D model.')
     parser.add_argument('centerline', type=str, help='the centerline to map diameters from')
-    parser.add_argument('surface', type=str, help='the surface to map onto')
-    parser.add_argument('volume', type=str, help='the volume to map onto')
-    parser.add_argument('wall_dir', type=str, help='the folder location of the mesh surfaces')
+    parser.add_argument('mesh', type=str, help='the mesh to map onto')
     parser.add_argument('-f','-file', type=str, nargs='?', default = None, help='the pickle filename with data')
-    parser.add_argument('-out', type=str, nargs='?', default = 'default.vtu', help='the vtu filename with data')
-    parser.add_argument('-o','-option', type=int, nargs='?', default=0, help='choose different options')
     parser.add_argument('-v', '-verbose', type=int, nargs='?', const=1, default=0, help='turn on verbosity')
     return parser
 
 def main(args):
-    mesh = read_polydata(args.volume)
-    surface = read_polydata(args.surface)
+    mesh = read_polydata(args.mesh)
     centerline = read_polydata(args.centerline)
     cleaner = vtk.vtkCleanPolyData()
     cleaner.SetInputData(centerline)
@@ -342,7 +475,7 @@ def main(args):
     else:
         vprint = lambda *a: None
 
-    if(args.f==None and args.o==0):
+    if(args.f==None):
         numPts = mesh.GetNumberOfPoints()
         data = [0]*numPts
         seed_pts = set()
@@ -385,14 +518,22 @@ def main(args):
         print('Found '+str(len(list(properties)))+' seed pts.')
         
         mesh.GetPointData().AddArray(seed_pts_array)
-        write_polydata(mesh,args.surface.split('.')[0]+'_mapped.vtu')
+        write_polydata(mesh,os.path.basename(args.mesh).split('.')[0]+'_mapped.'+os.path.basename(args.mesh).split('.')[1])
         graph = generateGraph(mesh)
         mesh = multipleSourceDistance(mesh,graph,-1,seed_pts,distances,properties)
         f = open("file.pkl","wb")
         pickle.dump(graph.node_properties,f)
+        props = pickle.load(f)
+        mesh = addPropertiesFromDict(mesh,props)
         f.close()
         #mesh = addPropertiesFromDict(mesh,graph.node_properties)
-    elif(args.o==0):
+    else:
         f = open("file.pkl","rb")
         props = pickle.load(f)
         mesh = addPropertiesFromDict(mesh,props)
+    write_polydata(mesh,os.path.basename(args.mesh).split('.')[0]+'_mapped_filled.'+os.path.basename(args.mesh).split('.')[1])
+
+if __name__ == '__main__':
+    parser = createParser()
+    args = parser.parse_args()
+    main(args)
